@@ -3,8 +3,11 @@ package darts
 import (
 	"bufio"
 	"encoding/gob"
+	"errors"
 	"fmt"
+	"io/ioutil"
 	"os"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -350,26 +353,41 @@ func (r dartsKeySlice) Swap(i, j int) {
 	r[i], r[j] = r[j], r[i]
 }
 
-func Import(inFile, outFile string, useDAWG bool) (Darts, error) {
+func Import(inFile, outFile string, useDAWG bool) (d Darts, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			d = Darts{}
+			fmt.Println(r)
+			stackInfo := debug.Stack()
+			fmt.Println(string(stackInfo))
+			err = errors.New(string(stackInfo))
+			t := time.Now()
+			timeStr := t.Format("20060102_150405")
+			fileName := fmt.Sprintf("%s_%d", timeStr, t.Unix())
+
+			ioutil.WriteFile(fmt.Sprintf("core_%s", fileName), stackInfo, 0644)
+			f, _ := os.Create(fmt.Sprintf("heapdump_%s", fileName))
+			defer f.Close()
+			debug.WriteHeapDump(f.Fd())
+		}
+	}()
+
 	unifile, erri := os.Open(inFile)
 	if erri != nil {
 		return Darts{}, erri
 	}
 	defer unifile.Close()
-	ofile, erro := os.Create(outFile)
-	if erro != nil {
-		return Darts{}, erro
-	}
-	defer ofile.Close()
 
 	dartsKeys := make(dartsKeySlice, 0, 130000)
 	uniLineReader := bufio.NewReaderSize(unifile, 400)
 	line, _, bufErr := uniLineReader.ReadLine()
 	for nil == bufErr {
 		rst := strings.Split(string(line), "\t")
-		key := []rune(rst[0])
-		value, _ := strconv.Atoi(rst[1])
-		dartsKeys = append(dartsKeys, dartsKey{key, value})
+		if len(rst) >= 2 {
+			key := []rune(rst[0])
+			value, _ := strconv.Atoi(rst[1])
+			dartsKeys = append(dartsKeys, dartsKey{key, value})
+		}
 		line, _, bufErr = uniLineReader.ReadLine()
 	}
 	sort.Sort(dartsKeys)
@@ -383,7 +401,6 @@ func Import(inFile, outFile string, useDAWG bool) (Darts, error) {
 	}
 	fmt.Printf("input dict length: %v\n", len(keys))
 	round := len(keys)
-	var d Darts
 	if useDAWG {
 		d = BuildFromDAWG(keys[:round], values[:round])
 	} else {
@@ -394,11 +411,17 @@ func Import(inFile, outFile string, useDAWG bool) (Darts, error) {
 	t := time.Now()
 	for i := 0; i < round; i++ {
 		if true != d.ExactMatchSearch(keys[i], 0) {
-			err := fmt.Errorf("missing key %s, %v, %d, %v, %v", string(keys[i]), keys[i], i, keys[i-1], keys[i+1])
+			err = fmt.Errorf("missing key %s, %v, %d, %v, %v", string(keys[i]), keys[i], i, keys[i-1], keys[i+1])
 			return d, err
 		}
 	}
 	fmt.Println(time.Since(t))
+
+	ofile, erro := os.Create(outFile)
+	if erro != nil {
+		return Darts{}, erro
+	}
+	defer ofile.Close()
 	enc := gob.NewEncoder(ofile)
 	enc.Encode(d)
 
